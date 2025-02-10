@@ -8,9 +8,35 @@ import customtkinter as ctk
 from tkinter import filedialog, messagebox
 import tkinter as tk
 import traceback
+from datetime import datetime
+
+# 配置日志
+def setup_logging():
+    # 创建logs目录
+    os.makedirs("logs", exist_ok=True)
+    
+    # 生成日志文件名，包含时间戳
+    log_filename = os.path.join("logs", f"novel_generator_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+    
+    # 配置日志格式
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        handlers=[
+            logging.FileHandler(log_filename, encoding='utf-8'),
+            logging.StreamHandler()  # 同时输出到控制台
+        ]
+    )
+    
+    logging.info("=== 程序启动 ===")
+    return log_filename
+
+# 在类定义前设置日志
+current_log_file = setup_logging()
 
 from config_manager import load_config, save_config
 from utils import read_file, save_string_to_txt, clear_file_content
+from llm_adapters import create_llm_adapter, BaseLLMAdapter
 
 from novel_generator import (
     Novel_architecture_generate,
@@ -147,6 +173,13 @@ class NovelGeneratorGUI:
         self.build_summary_tab()
         self.build_chapters_tab()
 
+        # 检查初始接口格式
+        if self.interface_format_var.get().lower() == "ragflow":
+            self.ragflow_frame.grid()
+            self.refresh_chat_assistants()
+        else:
+            self.ragflow_frame.grid_remove()
+
     def show_tooltip(self, key: str):
         """Display a popup with tooltip text."""
         info_text = tooltips.get(key, "暂无说明")
@@ -239,6 +272,7 @@ class NovelGeneratorGUI:
         self.right_frame.grid_rowconfigure(0, weight=0)
         self.right_frame.grid_rowconfigure(1, weight=1)
         self.right_frame.grid_rowconfigure(2, weight=0)
+        self.right_frame.grid_rowconfigure(3, weight=0)
         self.right_frame.columnconfigure(0, weight=1)
 
         # 配置区
@@ -254,6 +288,72 @@ class NovelGeneratorGUI:
 
         # 可选功能按钮
         self.build_optional_buttons_area(start_row=2)
+
+        # 添加RAGFlow聊天助手选择区域
+        self.ragflow_frame = ctk.CTkFrame(self.right_frame)
+        self.ragflow_frame.grid(row=3, column=0, sticky="ew", padx=5, pady=5)
+        self.ragflow_frame.grid_remove()  # 初始时隐藏
+        self.ragflow_frame.columnconfigure(0, weight=0)
+        self.ragflow_frame.columnconfigure(1, weight=1)
+        self.ragflow_frame.columnconfigure(2, weight=0)
+        
+        # RAGFlow聊天助手选择
+        self.create_label_with_help(
+            parent=self.ragflow_frame,
+            label_text="RAGFlow助手:",
+            tooltip_key="ragflow_assistant",
+            row=0,
+            column=0,
+            font=("Microsoft YaHei", 12)
+        )
+        
+        self.chat_assistant_var = ctk.StringVar()
+        self.chat_assistant_menu = ctk.CTkOptionMenu(
+            self.ragflow_frame,
+            values=[],
+            variable=self.chat_assistant_var,
+            command=self.on_chat_assistant_selected,
+            font=("Microsoft YaHei", 12)
+        )
+        self.chat_assistant_menu.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+        
+        self.refresh_assistants_btn = ctk.CTkButton(
+            self.ragflow_frame,
+            text="刷新",
+            command=self.refresh_chat_assistants,
+            width=60,
+            font=("Microsoft YaHei", 12)
+        )
+        self.refresh_assistants_btn.grid(row=0, column=2, padx=5, pady=5)
+        
+        # RAGFlow会话选择
+        self.create_label_with_help(
+            parent=self.ragflow_frame,
+            label_text="RAGFlow会话:",
+            tooltip_key="ragflow_session",
+            row=1,
+            column=0,
+            font=("Microsoft YaHei", 12)
+        )
+        
+        self.chat_session_var = ctk.StringVar()
+        self.chat_session_menu = ctk.CTkOptionMenu(
+            self.ragflow_frame,
+            values=[],
+            variable=self.chat_session_var,
+            command=self.on_chat_session_selected,
+            font=("Microsoft YaHei", 12)
+        )
+        self.chat_session_menu.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
+        
+        self.new_session_btn = ctk.CTkButton(
+            self.ragflow_frame,
+            text="新建",
+            command=self.create_new_session,
+            width=60,
+            font=("Microsoft YaHei", 12)
+        )
+        self.new_session_btn.grid(row=1, column=2, padx=5, pady=5)
 
     def build_config_tabview(self):
         self.config_tabview = ctk.CTkTabview(self.config_frame)
@@ -292,7 +392,13 @@ class NovelGeneratorGUI:
                 self.base_url_var.set("https://api.openai.com/v1")
             elif new_value == "DeepSeek":
                 self.base_url_var.set("https://api.deepseek.com/v1")
-
+            elif new_value == "RAGFlow":
+                self.base_url_var.set("http://localhost:8000")
+                self.ragflow_frame.grid()  # 显示RAGFlow相关控件
+                self.refresh_chat_assistants()  # 自动刷新聊天助手列表
+            else:
+                self.ragflow_frame.grid_remove()  # 隐藏RAGFlow相关控件
+            
         for i in range(7):
             self.ai_config_tab.grid_rowconfigure(i, weight=0)
         self.ai_config_tab.grid_columnconfigure(0, weight=0)
@@ -332,7 +438,7 @@ class NovelGeneratorGUI:
             column=0,
             font=("Microsoft YaHei", 12)
         )
-        interface_options = ["DeepSeek", "OpenAI", "Ollama", "ML Studio"]
+        interface_options = ["DeepSeek", "OpenAI", "Ollama", "ML Studio", "RAGFlow"]  # 添加RAGFlow选项
         interface_dropdown = ctk.CTkOptionMenu(
             self.ai_config_tab,
             values=interface_options,
@@ -794,10 +900,15 @@ class NovelGeneratorGUI:
             self.filepath_var.set(selected_dir)
 
     def log(self, message: str):
+        """向UI和日志文件写入日志"""
+        # 写入UI日志框
         self.log_text.configure(state="normal")
         self.log_text.insert("end", message + "\n")
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
+        
+        # 写入日志文件
+        logging.info(message)
 
     def safe_log(self, message: str):
         self.master.after(0, lambda: self.log(message))
@@ -824,12 +935,21 @@ class NovelGeneratorGUI:
             self.disable_button_safe(self.btn_generate_architecture)
             try:
                 interface_format = self.interface_format_var.get().strip()
-                api_key = self.api_key_var.get().strip()
-                base_url = self.base_url_var.get().strip()
-                model_name = self.model_name_var.get().strip()
-                temperature = self.temperature_var.get()
-                max_tokens = self.max_tokens_var.get()
-                timeout_val = self.safe_get_int(self.timeout_var, 600)
+                
+                # 获取chat_id和session_id
+                chat_id = None
+                session_id = None
+                if interface_format.lower() == "ragflow":
+                    if not self.chat_assistant_var.get() or not self.chat_session_var.get():
+                        messagebox.showwarning("警告", "使用RAGFlow接口需要先选择聊天助手和会话")
+                        return
+                    
+                    # 从选项中提取ID
+                    chat_id = self.chat_assistant_var.get().split("(")[-1].rstrip(")")
+                    session_id = self.chat_session_var.get().split("(")[-1].rstrip(")")
+                    
+                    # 调试日志
+                    self.log(f"使用RAGFlow生成架构 - chat_id: {chat_id}, session_id: {session_id}")
 
                 topic = self.topic_text.get("0.0", "end").strip()
                 genre = self.genre_var.get().strip()
@@ -839,17 +959,19 @@ class NovelGeneratorGUI:
                 self.safe_log("开始生成小说架构...")
                 Novel_architecture_generate(
                     interface_format=interface_format,
-                    api_key=api_key,
-                    base_url=base_url,
-                    llm_model=model_name,
+                    api_key=self.api_key_var.get().strip(),
+                    base_url=self.base_url_var.get().strip(),
+                    llm_model=self.model_name_var.get().strip(),
                     topic=topic,
                     genre=genre,
                     number_of_chapters=num_chapters,
                     word_number=word_number,
                     filepath=filepath,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    timeout=timeout_val
+                    temperature=self.temperature_var.get(),
+                    max_tokens=self.max_tokens_var.get(),
+                    timeout=self.safe_get_int(self.timeout_var, 600),
+                    chat_id=chat_id,  # 确保传递chat_id
+                    session_id=session_id  # 确保传递session_id
                 )
                 self.safe_log("✅ 小说架构生成完成。请在 'Novel Architecture' 标签页查看或编辑。")
             except Exception:
@@ -870,25 +992,37 @@ class NovelGeneratorGUI:
             self.disable_button_safe(self.btn_generate_directory)
             try:
                 interface_format = self.interface_format_var.get().strip()
-                api_key = self.api_key_var.get().strip()
-                base_url = self.base_url_var.get().strip()
-                model_name = self.model_name_var.get().strip()
+                
+                # 获取chat_id和session_id
+                chat_id = None
+                session_id = None
+                if interface_format.lower() == "ragflow":
+                    if not self.chat_assistant_var.get() or not self.chat_session_var.get():
+                        messagebox.showwarning("警告", "使用RAGFlow接口需要先选择聊天助手和会话")
+                        return
+                    
+                    # 从选项中提取ID
+                    chat_id = self.chat_assistant_var.get().split("(")[-1].rstrip(")")
+                    session_id = self.chat_session_var.get().split("(")[-1].rstrip(")")
+                    
+                    # 调试日志
+                    self.log(f"使用RAGFlow生成章节蓝图 - chat_id: {chat_id}, session_id: {session_id}")
+
                 number_of_chapters = self.safe_get_int(self.num_chapters_var, 10)
-                temperature = self.temperature_var.get()
-                max_tokens = self.max_tokens_var.get()
-                timeout_val = self.safe_get_int(self.timeout_var, 600)
 
                 self.safe_log("开始生成章节蓝图...")
                 Chapter_blueprint_generate(
                     interface_format=interface_format,
-                    api_key=api_key,
-                    base_url=base_url,
-                    llm_model=model_name,
+                    api_key=self.api_key_var.get().strip(),
+                    base_url=self.base_url_var.get().strip(),
+                    llm_model=self.model_name_var.get().strip(),
                     number_of_chapters=number_of_chapters,
                     filepath=filepath,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    timeout=timeout_val
+                    temperature=self.temperature_var.get(),
+                    max_tokens=self.max_tokens_var.get(),
+                    timeout=self.safe_get_int(self.timeout_var, 600),
+                    chat_id=chat_id,  # 确保传递chat_id
+                    session_id=session_id  # 确保传递session_id
                 )
                 self.safe_log("✅ 章节蓝图生成完成。请在 'Chapter Blueprint' 标签页查看或编辑。")
             except Exception:
@@ -902,19 +1036,28 @@ class NovelGeneratorGUI:
     def generate_chapter_draft_ui(self):
         filepath = self.filepath_var.get().strip()
         if not filepath:
-            messagebox.showwarning("警告", "请先配置保存文件路径。")
+            messagebox.showwarning("警告", "请先选择保存文件路径")
             return
 
         def task():
             self.disable_button_safe(self.btn_generate_chapter)
             try:
                 interface_format = self.interface_format_var.get().strip()
-                api_key = self.api_key_var.get().strip()
-                base_url = self.base_url_var.get().strip()
-                model_name = self.model_name_var.get().strip()
-                temperature = self.temperature_var.get()
-                max_tokens = self.max_tokens_var.get()
-                timeout_val = self.safe_get_int(self.timeout_var, 600)
+                
+                # 获取chat_id和session_id
+                chat_id = None
+                session_id = None
+                if interface_format.lower() == "ragflow":
+                    if not self.chat_assistant_var.get() or not self.chat_session_var.get():
+                        messagebox.showwarning("警告", "使用RAGFlow接口需要先选择聊天助手和会话")
+                        return
+                    
+                    # 从选项中提取ID
+                    chat_id = self.chat_assistant_var.get().split("(")[-1].rstrip(")")
+                    session_id = self.chat_session_var.get().split("(")[-1].rstrip(")")
+                    
+                    # 调试日志
+                    self.log(f"使用RAGFlow生成草稿 - chat_id: {chat_id}, session_id: {session_id}")
 
                 chap_num = self.safe_get_int(self.chapter_num_var, 1)
                 word_number = self.safe_get_int(self.word_number_var, 3000)
@@ -933,13 +1076,13 @@ class NovelGeneratorGUI:
 
                 self.safe_log(f"开始生成第{chap_num}章草稿...")
                 draft_text = generate_chapter_draft(
-                    api_key=api_key,
-                    base_url=base_url,
-                    model_name=model_name,
+                    api_key=self.api_key_var.get().strip(),
+                    base_url=self.base_url_var.get().strip(),
+                    model_name=self.model_name_var.get().strip(),
                     filepath=filepath,
                     novel_number=chap_num,
                     word_number=word_number,
-                    temperature=temperature,
+                    temperature=self.temperature_var.get(),
                     user_guidance=user_guidance,
                     characters_involved=char_inv,
                     key_items=key_items,
@@ -951,8 +1094,10 @@ class NovelGeneratorGUI:
                     embedding_model_name=embedding_model_name,
                     embedding_retrieval_k=embedding_k,
                     interface_format=interface_format,
-                    max_tokens=max_tokens,
-                    timeout=timeout_val
+                    max_tokens=self.max_tokens_var.get(),
+                    timeout=self.safe_get_int(self.timeout_var, 600),
+                    chat_id=chat_id,  # 确保传递chat_id
+                    session_id=session_id  # 确保传递session_id
                 )
                 if draft_text:
                     self.safe_log(f"✅ 第{chap_num}章草稿生成完成。请在左侧查看或编辑。")
@@ -976,87 +1121,52 @@ class NovelGeneratorGUI:
     def finalize_chapter_ui(self):
         filepath = self.filepath_var.get().strip()
         if not filepath:
-            messagebox.showwarning("警告", "请先配置保存文件路径。")
+            messagebox.showwarning("警告", "请先选择保存文件路径")
             return
 
         def task():
             self.disable_button_safe(self.btn_finalize_chapter)
             try:
                 interface_format = self.interface_format_var.get().strip()
-                api_key = self.api_key_var.get().strip()
-                base_url = self.base_url_var.get().strip()
-                model_name = self.model_name_var.get().strip()
-                temperature = self.temperature_var.get()
-                max_tokens = self.max_tokens_var.get()
-                timeout_val = self.safe_get_int(self.timeout_var, 600)
-
-                embedding_api_key = self.embedding_api_key_var.get().strip()
-                embedding_url = self.embedding_url_var.get().strip()
-                embedding_interface_format = self.embedding_interface_format_var.get().strip()
-                embedding_model_name = self.embedding_model_name_var.get().strip()
+                
+                # 获取chat_id和session_id
+                chat_id = None
+                session_id = None
+                if interface_format.lower() == "ragflow":
+                    if not self.chat_assistant_var.get() or not self.chat_session_var.get():
+                        messagebox.showwarning("警告", "使用RAGFlow接口需要先选择聊天助手和会话")
+                        return
+                    
+                    # 从选项中提取ID
+                    chat_id = self.chat_assistant_var.get().split("(")[-1].rstrip(")")
+                    session_id = self.chat_session_var.get().split("(")[-1].rstrip(")")
+                    
+                    # 调试日志
+                    self.log(f"使用RAGFlow定稿章节 - chat_id: {chat_id}, session_id: {session_id}")
 
                 chap_num = self.safe_get_int(self.chapter_num_var, 1)
                 word_number = self.safe_get_int(self.word_number_var, 3000)
 
                 self.safe_log(f"开始定稿第{chap_num}章...")
-
-                # 先读取用户在文本框中编辑好的内容
-                chapters_dir = os.path.join(filepath, "chapters")
-                os.makedirs(chapters_dir, exist_ok=True)
-                chapter_file = os.path.join(chapters_dir, f"chapter_{chap_num}.txt")
-
-                edited_text = self.chapter_result.get("0.0", "end").strip()
-
-                # 如果字数不足70%，询问是否扩写
-                if len(edited_text) < 0.7 * word_number:
-                    ask = messagebox.askyesno(
-                        "字数不足",
-                        f"当前章节字数 ({len(edited_text)}) 低于目标字数({word_number})的70%，是否要尝试扩写？"
-                    )
-                    if ask:
-                        # 调用 enrich_chapter_text 进行扩写
-                        self.safe_log("正在扩写章节内容...")
-                        enriched = enrich_chapter_text(
-                            chapter_text=edited_text,
-                            word_number=word_number,
-                            api_key=api_key,
-                            base_url=base_url,
-                            model_name=model_name,
-                            temperature=temperature,
-                            interface_format=interface_format,
-                            max_tokens=max_tokens,
-                            timeout=timeout_val
-                        )
-                        edited_text = enriched
-                        # 更新文本框显示
-                        self.master.after(0, lambda: self.chapter_result.delete("0.0", "end"))
-                        self.master.after(0, lambda: self.chapter_result.insert("0.0", edited_text))
-
-                # 将（可能已扩写的）文本保存到本地文件
-                clear_file_content(chapter_file)
-                save_string_to_txt(edited_text, chapter_file)
-
-                # 调用 finalize_chapter 做最终处理
                 finalize_chapter(
                     novel_number=chap_num,
                     word_number=word_number,
-                    api_key=api_key,
-                    base_url=base_url,
-                    model_name=model_name,
-                    temperature=temperature,
+                    api_key=self.api_key_var.get().strip(),
+                    base_url=self.base_url_var.get().strip(),
+                    model_name=self.model_name_var.get().strip(),
+                    temperature=self.temperature_var.get(),
                     filepath=filepath,
-                    embedding_api_key=embedding_api_key,
-                    embedding_url=embedding_url,
-                    embedding_interface_format=embedding_interface_format,
-                    embedding_model_name=embedding_model_name,
+                    embedding_api_key=self.embedding_api_key_var.get().strip(),
+                    embedding_url=self.embedding_url_var.get().strip(),
+                    embedding_interface_format=self.embedding_interface_format_var.get().strip(),
+                    embedding_model_name=self.embedding_model_name_var.get().strip(),
                     interface_format=interface_format,
-                    max_tokens=max_tokens,
-                    timeout=timeout_val
+                    max_tokens=self.max_tokens_var.get(),
+                    timeout=self.safe_get_int(self.timeout_var, 600),
+                    chat_id=chat_id,  # 确保传递chat_id
+                    session_id=session_id  # 确保传递session_id
                 )
-                self.safe_log(f"✅ 第{chap_num}章定稿完成（已更新全局摘要、角色状态、向量库）。")
-
-                final_text = read_file(chapter_file)
-                self.master.after(0, lambda: self.show_chapter_in_textbox(final_text))
+                self.safe_log(f"✅ 第{chap_num}章定稿完成。")
 
             except Exception:
                 self.handle_exception("定稿章节时出错")
@@ -1069,16 +1179,28 @@ class NovelGeneratorGUI:
     def do_consistency_check(self):
         filepath = self.filepath_var.get().strip()
         if not filepath:
-            messagebox.showwarning("警告", "请先配置保存文件路径。")
+            messagebox.showwarning("警告", "请先选择保存文件路径")
             return
 
         def task():
             self.disable_button_safe(self.btn_check_consistency)
             try:
-                api_key = self.api_key_var.get().strip()
-                base_url = self.base_url_var.get().strip()
-                model_name = self.model_name_var.get().strip()
-                temperature = self.temperature_var.get()
+                interface_format = self.interface_format_var.get().strip()
+                
+                # 获取chat_id和session_id
+                chat_id = None
+                session_id = None
+                if interface_format.lower() == "ragflow":
+                    if not self.chat_assistant_var.get() or not self.chat_session_var.get():
+                        messagebox.showwarning("警告", "使用RAGFlow接口需要先选择聊天助手和会话")
+                        return
+                    
+                    # 从选项中提取ID
+                    chat_id = self.chat_assistant_var.get().split("(")[-1].rstrip(")")
+                    session_id = self.chat_session_var.get().split("(")[-1].rstrip(")")
+                    
+                    # 调试日志
+                    self.log(f"使用RAGFlow进行一致性检查 - chat_id: {chat_id}, session_id: {session_id}")
 
                 chap_num = self.safe_get_int(self.chapter_num_var, 1)
                 chap_file = os.path.join(filepath, "chapters", f"chapter_{chap_num}.txt")
@@ -1094,10 +1216,15 @@ class NovelGeneratorGUI:
                     character_state=read_file(os.path.join(filepath, "character_state.txt")),
                     global_summary=read_file(os.path.join(filepath, "global_summary.txt")),
                     chapter_text=chapter_text,
-                    api_key=api_key,
-                    base_url=base_url,
-                    model_name=model_name,
-                    temperature=temperature,
+                    api_key=self.api_key_var.get().strip(),
+                    base_url=self.base_url_var.get().strip(),
+                    model_name=self.model_name_var.get().strip(),
+                    temperature=self.temperature_var.get(),
+                    interface_format=interface_format,
+                    max_tokens=self.max_tokens_var.get(),
+                    timeout=self.safe_get_int(self.timeout_var, 600),
+                    chat_id=chat_id,  # 确保传递chat_id
+                    session_id=session_id,  # 确保传递session_id
                     plot_arcs=""
                 )
                 self.safe_log("审校结果：")
@@ -1505,8 +1632,117 @@ class NovelGeneratorGUI:
         else:
             messagebox.showinfo("提示", "已经是最后一章了。")
 
+    def refresh_chat_assistants(self):
+        """刷新RAGFlow聊天助手列表"""
+        try:
+            if self.interface_format_var.get().lower() != "ragflow":
+                self.chat_assistant_menu.configure(values=[])
+                self.chat_session_menu.configure(values=[])
+                return
+            
+            adapter = create_llm_adapter(
+                interface_format=self.interface_format_var.get(),
+                api_key=self.api_key_var.get(),
+                base_url=self.base_url_var.get(),
+                model_name=self.model_name_var.get(),
+                temperature=self.temperature_var.get(),
+                max_tokens=self.max_tokens_var.get(),
+                timeout=self.timeout_var.get()
+            )
+            
+            assistants = adapter.list_chat_assistants()
+            assistant_names = [f"{a['name']} ({a['id']})" for a in assistants]
+            self.chat_assistant_menu.configure(values=assistant_names)
+            
+            if assistant_names:
+                self.chat_assistant_var.set(assistant_names[0])
+                self.on_chat_assistant_selected(assistant_names[0])
+            else:
+                self.chat_assistant_var.set("")
+                self.chat_session_menu.configure(values=[])
+            
+        except Exception as e:
+            self.log(f"刷新聊天助手列表失败: {str(e)}")
+
+    def on_chat_assistant_selected(self, value):
+        """当选择聊天助手时刷新会话列表"""
+        try:
+            if not value:
+                self.chat_session_menu.configure(values=[])
+                return
+            
+            # 从选项中提取chat_id
+            chat_id = value.split("(")[-1].rstrip(")")
+            self.log(f"选择聊天助手: {chat_id}")  # 调试日志
+            
+            adapter = create_llm_adapter(
+                interface_format=self.interface_format_var.get(),
+                api_key=self.api_key_var.get(),
+                base_url=self.base_url_var.get(),
+                model_name=self.model_name_var.get(),
+                temperature=self.temperature_var.get(),
+                max_tokens=self.max_tokens_var.get(),
+                timeout=self.timeout_var.get()
+            )
+            
+            sessions = adapter.list_sessions(chat_id)
+            session_names = [f"{s.get('name', 'Unnamed')} ({s['id']})" for s in sessions]
+            self.chat_session_menu.configure(values=session_names)
+            
+            if session_names:
+                self.chat_session_var.set(session_names[0])
+            
+        except Exception as e:
+            self.log(f"刷新会话列表失败: {str(e)}")
+
+    def on_chat_session_selected(self, value):
+        """当选择会话时设置当前会话"""
+        if not value:
+            return
+        
+        try:
+            chat_id = self.chat_assistant_var.get().split("(")[-1].rstrip(")")
+            session_id = value.split("(")[-1].rstrip(")")
+            
+            self.log(f"选择会话: chat_id={chat_id}, session_id={session_id}")  # 调试日志
+            
+        except Exception as e:
+            self.log(f"设置会话失败: {str(e)}")
+
+    def create_new_session(self):
+        """创建新的RAGFlow会话"""
+        try:
+            if not self.chat_assistant_var.get():
+                messagebox.showwarning("警告", "请先选择聊天助手")
+                return
+            
+            chat_id = self.chat_assistant_var.get().split("(")[-1].rstrip(")")
+            
+            adapter = create_llm_adapter(
+                interface_format=self.interface_format_var.get(),
+                api_key=self.api_key_var.get(),
+                base_url=self.base_url_var.get(),
+                model_name=self.model_name_var.get(),
+                temperature=self.temperature_var.get(),
+                max_tokens=self.max_tokens_var.get(),
+                timeout=self.timeout_var.get()
+            )
+            
+            session_id = adapter.create_session(chat_id)
+            if session_id:
+                self.log(f"创建新会话成功: {session_id}")
+                self.on_chat_assistant_selected(self.chat_assistant_var.get())
+            else:
+                messagebox.showerror("错误", "创建新会话失败")
+            
+        except Exception as e:
+            self.log(f"创建新会话失败: {str(e)}")
+
 
 if __name__ == "__main__":
     app = ctk.CTk()
     gui = NovelGeneratorGUI(app)
-    app.mainloop()
+    try:
+        app.mainloop()
+    finally:
+        logging.info("=== 程序退出 ===")

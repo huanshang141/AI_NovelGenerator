@@ -23,6 +23,12 @@ from utils import (
     save_string_to_txt
 )
 
+# LLM适配器
+from llm_adapters import create_llm_adapter, BaseLLMAdapter
+
+# Embedding适配器
+from embedding_adapters import create_embedding_adapter
+
 # prompt模板
 from prompt_definitions import (
     core_seed_prompt,
@@ -41,9 +47,6 @@ from prompt_definitions import (
 
 # 章节目录解析
 from chapter_directory_parser import get_chapter_info_from_blueprint
-
-from llm_adapters import create_llm_adapter
-from embedding_adapters import create_embedding_adapter
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
@@ -381,16 +384,11 @@ def summarize_recent_chapters(
     temperature: float,
     max_tokens: int,
     chapters_text_list: List[str],
-    timeout: int = 600
+    timeout: int = 600,
+    chat_id: str = None,  # 新增参数
+    session_id: str = None,  # 新增参数
 ) -> Tuple[str, str]:
-    """
-    生成 (short_summary, next_chapter_keywords)
-    如果解析失败，则返回 (合并文本, "")
-    """
-    combined_text = "\n".join(chapters_text_list).strip()
-    if not combined_text:
-        return ("", "")
-
+    """生成最近章节摘要"""
     llm_adapter = create_llm_adapter(
         interface_format=interface_format,
         base_url=base_url,
@@ -398,8 +396,13 @@ def summarize_recent_chapters(
         api_key=api_key,
         temperature=temperature,
         max_tokens=max_tokens,
-        timeout=timeout
+        timeout=timeout,
+        chat_id=chat_id,  # 传递chat_id
+        session_id=session_id  # 传递session_id
     )
+    combined_text = "\n".join(chapters_text_list).strip()
+    if not combined_text:
+        return ("", "")
 
     prompt = summarize_recent_chapters_prompt.format(combined_text=combined_text)
     response_text = invoke_with_cleaning(llm_adapter, prompt)
@@ -453,6 +456,27 @@ def save_partial_architecture_data(filepath: str, data: dict):
 
 # ============ 1) 生成总体架构 ============
 
+def _create_llm_adapter(**kwargs) -> BaseLLMAdapter:
+    """创建LLM适配器实例"""
+    adapter = create_llm_adapter(
+        interface_format=kwargs.get('interface_format'),
+        api_key=kwargs.get('api_key'),
+        base_url=kwargs.get('base_url'),
+        model_name=kwargs.get('model_name'),
+        temperature=kwargs.get('temperature', 0.7),
+        max_tokens=kwargs.get('max_tokens', 2048),
+        timeout=kwargs.get('timeout', 600)
+    )
+    
+    # 如果是RAGFlow接口，且提供了chat_id和session_id，则设置它们
+    if kwargs.get('interface_format', '').lower() == 'ragflow':
+        chat_id = kwargs.get('chat_id')
+        session_id = kwargs.get('session_id')
+        if chat_id and session_id:  # 只有在都提供的情况下才设置
+            adapter.set_chat_session(chat_id, session_id)
+    
+    return adapter
+
 def Novel_architecture_generate(
     interface_format: str,
     api_key: str,
@@ -465,7 +489,9 @@ def Novel_architecture_generate(
     filepath: str,
     temperature: float = 0.7,
     max_tokens: int = 2048,
-    timeout: int = 600
+    timeout: int = 600,
+    chat_id: str = None,  # 新增参数
+    session_id: str = None,  # 新增参数
 ) -> None:
     """
     依次调用:
@@ -486,14 +512,16 @@ def Novel_architecture_generate(
     # 加载已有的阶段性数据
     partial_data = load_partial_architecture_data(filepath)
 
-    llm_adapter = create_llm_adapter(
+    llm_adapter = _create_llm_adapter(
         interface_format=interface_format,
+        api_key=api_key,
         base_url=base_url,
         model_name=llm_model,
-        api_key=api_key,
         temperature=temperature,
         max_tokens=max_tokens,
-        timeout=timeout
+        timeout=timeout,
+        chat_id=chat_id,  # 传递chat_id
+        session_id=session_id  # 传递session_id
     )
 
     # Step1: 核心种子
@@ -621,7 +649,7 @@ def Novel_architecture_generate(
 
 def compute_chunk_size(number_of_chapters: int, max_tokens: int) -> int:
     """
-    基于“每章约100 tokens”的粗略估算，
+    基于"每章约100 tokens"的粗略估算，
     再结合当前max_tokens，计算分块大小：
       chunk_size = (floor(max_tokens/100/10)*10) - 10
     并确保 chunk_size 不会小于1或大于实际章节数。
@@ -664,17 +692,11 @@ def Chapter_blueprint_generate(
     number_of_chapters: int,
     temperature: float = 0.7,
     max_tokens: int = 4096,
-    timeout: int = 600
+    timeout: int = 600,
+    chat_id: str = None,  # 新增参数
+    session_id: str = None,  # 新增参数
 ) -> None:
-    """
-    若 Novel_directory.txt 已存在且内容非空，则表示可能是之前的部分生成结果；
-      解析其中已有的章节数，从下一个章节继续分块生成；
-      对于已有章节目录，传入时仅保留最近100章目录，避免prompt过长。
-    否则：
-      - 若章节数 <= chunk_size，直接一次性生成
-      - 若章节数 > chunk_size，进行分块生成
-    生成完成后输出至 Novel_directory.txt。
-    """
+    """生成章节蓝图"""
     arch_file = os.path.join(filepath, "Novel_architecture.txt")
     if not os.path.exists(arch_file):
         logging.warning("Novel_architecture.txt not found. Please generate architecture first.")
@@ -685,14 +707,16 @@ def Chapter_blueprint_generate(
         logging.warning("Novel_architecture.txt is empty.")
         return
 
-    llm_adapter = create_llm_adapter(
+    llm_adapter = _create_llm_adapter(
         interface_format=interface_format,
+        api_key=api_key,
         base_url=base_url,
         model_name=llm_model,
-        api_key=api_key,
         temperature=temperature,
         max_tokens=max_tokens,
-        timeout=timeout
+        timeout=timeout,
+        chat_id=chat_id,  # 传递chat_id
+        session_id=session_id  # 传递session_id
     )
 
     filename_dir = os.path.join(filepath, "Novel_directory.txt")
@@ -818,27 +842,28 @@ def generate_chapter_draft(
     filepath: str,
     novel_number: int,
     word_number: int,
-    temperature: float,
-    user_guidance: str,
-    characters_involved: str,
-    key_items: str,
-    scene_location: str,
-    time_constraint: str,
-    embedding_api_key: str,
-    embedding_url: str,
-    embedding_interface_format: str,
-    embedding_model_name: str,
-    embedding_retrieval_k: int = 2,
-    interface_format: str = "openai",
+    temperature: float = 0.7,
+    user_guidance: str = "",
+    characters_involved: str = "",
+    key_items: str = "",
+    scene_location: str = "",
+    time_constraint: str = "",
+    embedding_api_key: str = "",
+    embedding_url: str = "",
+    embedding_interface_format: str = "",
+    embedding_model_name: str = "",
+    embedding_retrieval_k: int = 4,
+    interface_format: str = "OpenAI",
     max_tokens: int = 2048,
-    timeout: int = 600
+    timeout: int = 600,
+    chat_id: str = None,
+    session_id: str = None,
 ) -> str:
-    """
-    根据 novel_number 判断是否为第一章。
-    - 若是第一章，则使用 first_chapter_draft_prompt
-    - 否则使用 next_chapter_draft_prompt
-    最终将生成文本存入 chapters/chapter_{novel_number}.txt。
-    """
+    """生成章节草稿"""
+    # 在这个函数中强制要求RAGFlow的chat_id和session_id
+    if interface_format.lower() == "ragflow" and (not chat_id or not session_id):
+        raise ValueError("使用RAGFlow接口生成章节草稿时需要提供chat_id和session_id")
+    
     arch_file = os.path.join(filepath, "Novel_architecture.txt")
     novel_architecture_text = read_file(arch_file)
 
@@ -952,14 +977,16 @@ def generate_chapter_draft(
             previous_chapter_excerpt=previous_chapter_excerpt
         )
 
-    llm_adapter = create_llm_adapter(
+    llm_adapter = _create_llm_adapter(
         interface_format=interface_format,
+        api_key=api_key,
         base_url=base_url,
         model_name=model_name,
-        api_key=api_key,
         temperature=temperature,
         max_tokens=max_tokens,
-        timeout=timeout
+        timeout=timeout,
+        chat_id=chat_id,  # 传递chat_id
+        session_id=session_id  # 传递session_id
     )
 
     chapter_content = invoke_with_cleaning(llm_adapter, prompt_text)
@@ -990,12 +1017,11 @@ def finalize_chapter(
     embedding_model_name: str,
     interface_format: str,
     max_tokens: int,
-    timeout: int = 600
+    timeout: int = 600,
+    chat_id: str = None,
+    session_id: str = None,
 ):
-    """
-    对指定章节做最终处理：更新全局摘要、更新角色状态、插入向量库等。
-    默认无需再做扩写操作，若有需要可在外部调用 enrich_chapter_text 处理后再定稿。
-    """
+    """定稿章节"""
     chapters_dir = os.path.join(filepath, "chapters")
     chapter_file = os.path.join(chapters_dir, f"chapter_{novel_number}.txt")
     chapter_text = read_file(chapter_file).strip()
@@ -1010,14 +1036,16 @@ def finalize_chapter(
     character_state_file = os.path.join(filepath, "character_state.txt")
     old_character_state = read_file(character_state_file)
 
-    llm_adapter = create_llm_adapter(
+    llm_adapter = _create_llm_adapter(
         interface_format=interface_format,
+        api_key=api_key,
         base_url=base_url,
         model_name=model_name,
-        api_key=api_key,
         temperature=temperature,
         max_tokens=max_tokens,
-        timeout=timeout
+        timeout=timeout,
+        chat_id=chat_id,  # 传递chat_id
+        session_id=session_id  # 传递session_id
     )
 
     # 更新全局摘要
@@ -1065,19 +1093,21 @@ def enrich_chapter_text(
     temperature: float,
     interface_format: str,
     max_tokens: int,
-    timeout: int=600
+    timeout: int = 600,
+    chat_id: str = None,  # 新增参数
+    session_id: str = None,  # 新增参数
 ) -> str:
-    """
-    对章节文本进行扩写，使其更接近 word_number 字数，保持剧情连贯。
-    """
-    llm_adapter = create_llm_adapter(
+    """扩写章节文本"""
+    llm_adapter = _create_llm_adapter(
         interface_format=interface_format,
+        api_key=api_key,
         base_url=base_url,
         model_name=model_name,
-        api_key=api_key,
         temperature=temperature,
         max_tokens=max_tokens,
-        timeout=timeout
+        timeout=timeout,
+        chat_id=chat_id,
+        session_id=session_id
     )
     prompt = f"""以下章节文本较短，请在保持剧情连贯的前提下进行扩写，使其更充实，接近 {word_number} 字左右：
 原内容：
@@ -1171,3 +1201,33 @@ def import_knowledge_file(
         except Exception as e:
             logging.warning(f"知识库导入失败: {e}")
             traceback.print_exc()
+
+def check_consistency(
+    novel_setting: str,
+    character_state: str,
+    global_summary: str,
+    chapter_text: str,
+    api_key: str,
+    base_url: str,
+    model_name: str,
+    temperature: float,
+    interface_format: str,
+    max_tokens: int,
+    timeout: int = 600,
+    chat_id: str = None,  # 新增参数
+    session_id: str = None,  # 新增参数
+    plot_arcs: str = ""
+) -> str:
+    """检查一致性"""
+    llm_adapter = _create_llm_adapter(
+        interface_format=interface_format,
+        api_key=api_key,
+        base_url=base_url,
+        model_name=model_name,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        timeout=timeout,
+        chat_id=chat_id,
+        session_id=session_id
+    )
+    # ... rest of the code ...

@@ -1,6 +1,7 @@
 # llm_adapters.py
 # -*- coding: utf-8 -*-
 import logging
+import requests
 from typing import Optional
 from langchain_openai import ChatOpenAI
 
@@ -131,6 +132,140 @@ class MLStudioAdapter(BaseLLMAdapter):
             return ""
         return response.content
 
+class RAGFlowAdapter(BaseLLMAdapter):
+    """
+    适配RAGFlow API接口
+    """
+    def __init__(self, api_key: str, base_url: str, model_name: str, max_tokens: int, temperature: float = 0.7, timeout: Optional[int] = 600):
+        self.base_url = base_url.rstrip('/')
+        self.api_key = api_key
+        self.model_name = model_name
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+        self.timeout = timeout
+        
+        # 初始化会话相关属性
+        self.chat_id = None
+        self.session_id = None
+        
+    def invoke(self, prompt: str) -> str:
+        import requests
+        import json
+        
+        if not self.chat_id or not self.session_id:
+            raise ValueError("请先设置chat_id和session_id")
+            
+        logging.info(f"RAGFlow调用: 使用chat_id={self.chat_id}, session_id={self.session_id}")
+        
+        # 调用RAGFlow的chat completion接口
+        headers = {
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {self.api_key}'
+        }
+        
+        data = {
+            "question": prompt,
+            "stream": False,
+            "session_id": self.session_id
+        }
+        
+        try:
+            response = requests.post(
+                f"{self.base_url}/api/v1/chats/{self.chat_id}/completions",
+                headers=headers,
+                json=data,
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            result = response.json()
+            
+            if result.get("code") == 0 and "data" in result:
+                return result["data"]["answer"]
+            else:
+                logging.error(f"RAGFlow API error: {result}")
+                return ""
+                
+        except Exception as e:
+            logging.error(f"Error calling RAGFlow API: {str(e)}")
+            return ""
+            
+    def list_chat_assistants(self) -> list:
+        """获取所有聊天助手列表"""
+        try:
+            headers = {
+                'Authorization': f'Bearer {self.api_key}'
+            }
+            response = requests.get(
+                f"{self.base_url}/api/v1/chats",
+                headers=headers,
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            result = response.json()
+            
+            if result.get("code") == 0 and "data" in result:
+                return result["data"]
+            return []
+            
+        except Exception as e:
+            logging.error(f"Error listing chat assistants: {str(e)}")
+            return []
+            
+    def list_sessions(self, chat_id: str) -> list:
+        """获取指定聊天助手的会话列表"""
+        try:
+            headers = {
+                'Authorization': f'Bearer {self.api_key}'
+            }
+            response = requests.get(
+                f"{self.base_url}/api/v1/chats/{chat_id}/sessions",
+                headers=headers,
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            result = response.json()
+            
+            if result.get("code") == 0 and "data" in result:
+                return result["data"]
+            return []
+            
+        except Exception as e:
+            logging.error(f"Error listing sessions: {str(e)}")
+            return []
+            
+    def create_session(self, chat_id: str, name: str = "New Session") -> Optional[str]:
+        """创建新的会话"""
+        try:
+            headers = {
+                'Content-Type': 'application/json',
+                'Authorization': f'Bearer {self.api_key}'
+            }
+            data = {
+                "name": name
+            }
+            response = requests.post(
+                f"{self.base_url}/api/v1/chats/{chat_id}/sessions",
+                headers=headers,
+                json=data,
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            result = response.json()
+            
+            if result.get("code") == 0 and "data" in result:
+                return result["data"].get("id")
+            return None
+            
+        except Exception as e:
+            logging.error(f"Error creating session: {str(e)}")
+            return None
+
+    def set_chat_session(self, chat_id: str, session_id: str):
+        """设置当前使用的chat_id和session_id"""
+        self.chat_id = chat_id
+        self.session_id = session_id
+        logging.info(f"RAGFlow设置会话: chat_id={chat_id}, session_id={session_id}")
+
 def create_llm_adapter(
     interface_format: str,
     base_url: str,
@@ -151,5 +286,7 @@ def create_llm_adapter(
         return OllamaAdapter(api_key, base_url, model_name, max_tokens, temperature, timeout)
     elif interface_format.lower() == "ml studio":
         return MLStudioAdapter(api_key, base_url, model_name, max_tokens, temperature, timeout)
+    elif interface_format.lower() == "ragflow":
+        return RAGFlowAdapter(api_key, base_url, model_name, max_tokens, temperature, timeout)
     else:
         raise ValueError(f"Unknown interface_format: {interface_format}")
