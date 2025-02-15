@@ -402,7 +402,9 @@ class NovelGeneratorGUI:
                 elif new_value == "DeepSeek":
                     self.base_url_var.set("https://api.deepseek.com/v1")
                 elif new_value == "Gemini":
-                    self.base_url_var.set("")
+                    self.base_url_var.set("")  # Gemini 通常不需要 Base URL，可以设置为空
+                elif new_value == "Azure AI":
+                    self.base_url_var.set("https://<your-endpoint>.services.ai.azure.com/models/chat/completions?api-version=2024-05-01-preview")
             
             # 如果model_name为空，则设置默认值
             if not self.model_name_var.get():
@@ -457,7 +459,7 @@ class NovelGeneratorGUI:
             column=0,
             font=("Microsoft YaHei", 12)
         )
-        interface_options = ["DeepSeek", "OpenAI", "Azure OpenAI", "Ollama", "ML Studio", "Gemini"]
+        interface_options = ["DeepSeek", "OpenAI", "Azure OpenAI", "Azure AI", "Ollama", "ML Studio", "Gemini"]
         interface_dropdown = ctk.CTkOptionMenu(
             self.ai_config_tab,
             values=interface_options,
